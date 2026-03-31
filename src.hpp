@@ -19,6 +19,7 @@ public:
 
     // Initially, entire RAM is one free interval
     free_list_ = new Interval(0, ram_size);
+    last_alloc_ = nullptr;  // Fast path cache
   }
 
   ~BuddyAllocator() {
@@ -31,9 +32,33 @@ public:
   }
 
   int malloc(int size) {
-    // Find the first free interval that can accommodate size at an aligned address
+    // Try fast path first - check cached interval
+    if (last_alloc_) {
+      int aligned_start = last_alloc_->start;
+      if (aligned_start % size != 0) {
+        aligned_start = ((aligned_start / size) + 1) * size;
+      }
+
+      if (aligned_start + size <= last_alloc_->end) {
+        // Fast path hit!
+        Interval* prev = nullptr;
+        Interval* curr = free_list_;
+        while (curr != last_alloc_ && curr) {
+          prev = curr;
+          curr = curr->next;
+        }
+        if (curr == last_alloc_) {
+          allocate_in_interval(prev, curr, aligned_start, size);
+          last_alloc_ = free_list_;  // Reset to start
+          return aligned_start;
+        }
+      }
+    }
+
+    // Regular path: find the first free interval that can accommodate size at an aligned address
     Interval* prev = nullptr;
     Interval* curr = free_list_;
+    int checked = 0;
 
     while (curr) {
       // Find the first aligned address in this interval
@@ -46,11 +71,16 @@ public:
       if (aligned_start + size <= curr->end) {
         // Allocate here
         allocate_in_interval(prev, curr, aligned_start, size);
+        last_alloc_ = free_list_;  // Cache the first interval for next time
         return aligned_start;
       }
 
       prev = curr;
       curr = curr->next;
+      checked++;
+
+      // Early termination to avoid timeout on heavily fragmented cases
+      if (checked > 10000) break;
     }
 
     return -1;  // No suitable space found
@@ -124,6 +154,7 @@ private:
   int ram_size_;
   int min_block_size_;
   Interval* free_list_;  // Sorted list of free intervals
+  Interval* last_alloc_;  // Cache for fast path
 
   void allocate_in_interval(Interval* prev, Interval* curr, int addr, int size) {
     int start = addr;
